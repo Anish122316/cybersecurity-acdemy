@@ -1,0 +1,13 @@
+{
+  "name": "CyberShield Academy",
+  "description": "A professional cybersecurity learning platform featuring live sessions, AI doubt solving, and comprehensive course management.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "AI-Powered Learning",
+    "Real-time Collaboration",
+    "Cybersecurity Labs"
+  ]
+}

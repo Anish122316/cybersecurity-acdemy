@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Functions ---
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserData(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
+
+    function hasRole(role) {
+      return isSignedIn() && getUserData(request.auth.uid).role == role;
+    }
+
+    function isAdmin() {
+      return hasRole('admin');
+    }
+
+    function isTeacher() {
+      return hasRole('teacher') || isAdmin();
+    }
+
+    // --- User Validation ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['userId', 'name', 'email', 'role', 'createdAt']) &&
+             data.keys().size() == 5 &&
+             data.userId == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.email is string && data.email.size() < 255 &&
+             data.role in ['student', 'teacher', 'admin'] &&
+             data.createdAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(userId) && isValidUser(incoming()) && incoming().role == 'student'; // Force students on self-signup
+      allow update: if isSignedIn() && isValidId(userId) && (
+        (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['name']) && incoming().name is string) ||
+        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['role']))
+      );
+    }
+
+    // --- Course Validation ---
+    function isValidCourse(data) {
+      return data.keys().hasAll(['title', 'instructorId', 'difficulty', 'createdAt']) &&
+             data.title is string && data.title.size() < 200 &&
+             data.instructorId == request.auth.uid &&
+             data.difficulty in ['Beginner', 'Intermediate', 'Advanced'] &&
+             data.createdAt == request.time;
+    }
+
+    match /courses/{courseId} {
+      allow read: if isSignedIn();
+      allow create: if isTeacher() && isValidId(courseId) && isValidCourse(incoming());
+      allow update: if isTeacher() && existing().instructorId == request.auth.uid && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'difficulty', 'thumbnail', 'tags']);
+      allow delete: if isAdmin();
+
+      match /lessons/{lessonId} {
+        allow read: if isSignedIn();
+        allow write: if isTeacher() && get(/databases/$(database)/documents/courses/$(courseId)).data.instructorId == request.auth.uid;
+      }
+
+      match /assignments/{assignmentId} {
+        allow read: if isSignedIn();
+        allow write: if isTeacher() && get(/databases/$(database)/documents/courses/$(courseId)).data.instructorId == request.auth.uid;
+      }
+    }
+
+    // --- Submission Validation ---
+    function isValidSubmission(data) {
+      return data.keys().hasAll(['assignmentId', 'studentId', 'fileUrl', 'status', 'submittedAt']) &&
+             data.studentId == request.auth.uid &&
+             data.status == 'pending' &&
+             data.submittedAt == request.time;
+    }
+
+    match /submissions/{submissionId} {
+      allow get: if isSignedIn() && (isOwner(existing().studentId) || isTeacher());
+      allow list: if isSignedIn() && (resource.data.studentId == request.auth.uid || isTeacher());
+      allow create: if isSignedIn() && isValidId(submissionId) && isValidSubmission(incoming()) && 
+                    exists(/databases/$(database)/documents/courses/$(incoming().courseId)); // Relation check
+      allow update: if isSignedIn() && (
+        (isOwner(existing().studentId) && existing().status == 'pending' && incoming().diff(existing()).affectedKeys().hasOnly(['fileUrl'])) ||
+        (isTeacher() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'grade', 'feedback']) && incoming().status in ['pending', 'graded'])
+      );
+    }
+
+    // --- Progress Validation ---
+    match /progress/{progressId} {
+      allow read: if isSignedIn() && (isOwner(resource.data.studentId) || isTeacher());
+      allow write: if isSignedIn() && isOwner(request.resource.data.studentId);
+    }
+  }
+}
